@@ -125,3 +125,68 @@
 (define-read-only (get-owner (animal-id uint))
   (ok (get owner (unwrap! (map-get? animal-details { animal-id: animal-id }) err-animal-not-found)))
 )
+
+
+(define-public (add-batch-vaccination-records 
+    (animal-ids (list 10 uint))
+    (vaccine-name (string-ascii 30)))
+  (let
+    ((current-id (var-get next-vaccination-id)))
+    (asserts! (is-eq tx-sender contract-owner) err-not-authorized)
+    (ok (map process-vaccination animal-ids vaccine-name))
+  )
+)
+
+(define-private (process-vaccination (animal-id uint) (vaccine-name (string-ascii 30)))
+  (let (
+    (record-id (var-get next-vaccination-id))
+    (animal (unwrap! (map-get? animal-details { animal-id: animal-id }) err-animal-not-found))
+  )
+    (map-set vaccination-records
+      { animal-id: animal-id, record-id: record-id }
+      {
+        vaccine-name: vaccine-name,
+        date: stacks-block-height,
+        vet: tx-sender
+      }
+    )
+    (map-set animal-details
+      { animal-id: animal-id }
+      (merge animal {
+        last-vaccination: stacks-block-height,
+        vaccination-count: (+ (get vaccination-count animal) u1)
+      })
+    )
+    (var-set next-vaccination-id (+ record-id u1))
+    (ok record-id)
+  )
+)
+
+
+(define-map health-scores
+  { animal-id: uint }
+  { score: uint }
+)
+
+(define-read-only (calculate-health-score (animal-id uint))
+  (let (
+    (animal (unwrap! (map-get? animal-details { animal-id: animal-id }) err-animal-not-found))
+    (current-height stacks-block-height)
+    (vaccination-score (* (get vaccination-count animal) u10))
+    (last-vaccination-score (if (> (- current-height (get last-vaccination animal)) u5000) u0 u50))
+  )
+    (ok (+ vaccination-score last-vaccination-score))
+  )
+)
+
+(define-public (update-health-score (animal-id uint))
+  (let (
+    (new-score (unwrap! (calculate-health-score animal-id) err-animal-not-found))
+  )
+    (map-set health-scores
+      { animal-id: animal-id }
+      { score: new-score }
+    )
+    (ok new-score)
+  )
+)
