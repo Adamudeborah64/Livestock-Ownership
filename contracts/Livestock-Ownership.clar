@@ -190,3 +190,97 @@
     (ok new-score)
   )
 )
+
+(define-map breeding-records
+  { breeding-id: uint }
+  {
+    sire-id: uint,
+    dam-id: uint,
+    breeding-date: uint,
+    expected-birth-date: uint,
+    breeding-method: (string-ascii 20),
+    breeder: principal,
+    status: (string-ascii 15)
+  }
+)
+
+(define-map offspring-records
+  { animal-id: uint }
+  {
+    sire-id: (optional uint),
+    dam-id: (optional uint),
+    breeding-id: (optional uint),
+    generation: uint
+  }
+)
+
+(define-map breeding-stats
+  { animal-id: uint }
+  {
+    total-breedings: uint,
+    successful-births: uint,
+    last-breeding-date: uint
+  }
+)
+
+(define-data-var next-breeding-id uint u1)
+
+(define-constant err-invalid-breeding-pair (err u105))
+(define-constant err-breeding-not-found (err u106))
+(define-constant err-animal-too-young (err u107))
+
+(define-private (update-breeding-stats (animal-id uint))
+  (let (
+    (current-stats (default-to { total-breedings: u0, successful-births: u0, last-breeding-date: u0 }
+                               (map-get? breeding-stats { animal-id: animal-id })))
+  )
+    (map-set breeding-stats
+      { animal-id: animal-id }
+      (merge current-stats {
+        total-breedings: (+ (get total-breedings current-stats) u1),
+        last-breeding-date: stacks-block-height
+      })
+    )
+    (ok true)
+  )
+)
+
+(define-private (increment-successful-births (animal-id uint))
+  (let (
+    (current-stats (default-to { total-breedings: u0, successful-births: u0, last-breeding-date: u0 }
+                               (map-get? breeding-stats { animal-id: animal-id })))
+  )
+    (map-set breeding-stats
+      { animal-id: animal-id }
+      (merge current-stats {
+        successful-births: (+ (get successful-births current-stats) u1)
+      })
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-breeding-record (breeding-id uint))
+  (ok (unwrap! (map-get? breeding-records { breeding-id: breeding-id }) err-breeding-not-found))
+)
+
+(define-read-only (get-animal-lineage (animal-id uint))
+  (ok (map-get? offspring-records { animal-id: animal-id }))
+)
+
+(define-read-only (get-breeding-stats (animal-id uint))
+  (ok (map-get? breeding-stats { animal-id: animal-id }))
+)
+
+(define-read-only (calculate-breeding-success-rate (animal-id uint))
+  (let (
+    (stats (default-to { total-breedings: u0, successful-births: u0, last-breeding-date: u0 }
+                       (map-get? breeding-stats { animal-id: animal-id })))
+  )
+    (if (is-eq (get total-breedings stats) u0)
+      (ok u0)
+      (ok (/ (* (get successful-births stats) u100) (get total-breedings stats)))
+    )
+  )
+)
+
