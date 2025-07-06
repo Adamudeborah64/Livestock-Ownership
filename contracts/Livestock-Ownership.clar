@@ -284,3 +284,181 @@
   )
 )
 
+(define-map insurance-policies
+  { policy-id: uint }
+  {
+    animal-id: uint,
+    policy-holder: principal,
+    coverage-type: (string-ascii 20),
+    premium: uint,
+    coverage-amount: uint,
+    start-date: uint,
+    end-date: uint,
+    status: (string-ascii 10),
+    min-health-score: uint
+  }
+)
+
+(define-map insurance-claims
+  { claim-id: uint }
+  {
+    policy-id: uint,
+    animal-id: uint,
+    claim-type: (string-ascii 20),
+    claim-amount: uint,
+    claim-date: uint,
+    status: (string-ascii 15),
+    auto-approved: bool
+  }
+)
+
+(define-map insurance-pool
+  { pool-id: uint }
+  {
+    total-funds: uint,
+    active-policies: uint,
+    total-claims-paid: uint
+  }
+)
+
+(define-data-var next-policy-id uint u1)
+(define-data-var next-claim-id uint u1)
+(define-data-var insurance-pool-balance uint u0)
+
+(define-constant err-insufficient-funds (err u108))
+(define-constant err-policy-not-found (err u109))
+(define-constant err-claim-not-found (err u110))
+(define-constant err-policy-expired (err u111))
+(define-constant err-health-score-too-low (err u112))
+(define-constant err-claim-already-processed (err u113))
+
+(define-public (purchase-insurance-policy 
+    (animal-id uint)
+    (coverage-type (string-ascii 20))
+    (premium uint)
+    (coverage-amount uint)
+    (duration uint)
+    (min-health-score uint))
+  (let (
+    (policy-id (var-get next-policy-id))
+    (animal (unwrap! (map-get? animal-details { animal-id: animal-id }) err-animal-not-found))
+    (current-health-score (unwrap! (calculate-health-score animal-id) err-animal-not-found))
+  )
+    (asserts! (is-eq (get owner animal) tx-sender) err-not-owner)
+    (asserts! (>= current-health-score min-health-score) err-health-score-too-low)
+    (try! (stx-transfer? premium tx-sender (as-contract tx-sender)))
+    (map-set insurance-policies
+      { policy-id: policy-id }
+      {
+        animal-id: animal-id,
+        policy-holder: tx-sender,
+        coverage-type: coverage-type,
+        premium: premium,
+        coverage-amount: coverage-amount,
+        start-date: stacks-block-height,
+        end-date: (+ stacks-block-height duration),
+        status: "active",
+        min-health-score: min-health-score
+      }
+    )
+    (var-set insurance-pool-balance (+ (var-get insurance-pool-balance) premium))
+    (var-set next-policy-id (+ policy-id u1))
+    (ok policy-id)
+  )
+)
+
+(define-public (file-insurance-claim 
+    (policy-id uint)
+    (claim-type (string-ascii 20))
+    (claim-amount uint))
+  (let (
+    (claim-id (var-get next-claim-id))
+    (policy (unwrap! (map-get? insurance-policies { policy-id: policy-id }) err-policy-not-found))
+    (animal-id (get animal-id policy))
+    (current-health-score (unwrap! (calculate-health-score animal-id) err-animal-not-found))
+    (auto-approved (and 
+      (is-eq (get status policy) "active")
+      (>= stacks-block-height (get start-date policy))
+      (<= stacks-block-height (get end-date policy))
+      (>= current-health-score (get min-health-score policy))
+      (<= claim-amount (get coverage-amount policy))))
+  )
+    (asserts! (is-eq (get policy-holder policy) tx-sender) err-not-owner)
+    (asserts! (is-eq (get status policy) "active") err-policy-expired)
+    (asserts! (<= stacks-block-height (get end-date policy)) err-policy-expired)
+    (asserts! (<= claim-amount (get coverage-amount policy)) err-insufficient-funds)
+    (map-set insurance-claims
+      { claim-id: claim-id }
+      {
+        policy-id: policy-id,
+        animal-id: animal-id,
+        claim-type: claim-type,
+        claim-amount: claim-amount,
+        claim-date: stacks-block-height,
+        status: (if auto-approved "approved" "pending"),
+        auto-approved: auto-approved
+      }
+    )
+    (var-set next-claim-id (+ claim-id u1))
+    (if auto-approved
+      (process-claim-payout claim-id)
+      (ok claim-id))
+  )
+)
+
+(define-private (process-claim-payout (claim-id uint))
+  (let (
+    (claim (unwrap! (map-get? insurance-claims { claim-id: claim-id }) err-claim-not-found))
+    (policy (unwrap! (map-get? insurance-policies { policy-id: (get policy-id claim) }) err-policy-not-found))
+    (payout-amount (get claim-amount claim))
+  )
+    (asserts! (>= (var-get insurance-pool-balance) payout-amount) err-insufficient-funds)
+    (try! (as-contract (stx-transfer? payout-amount tx-sender (get policy-holder policy))))
+    (var-set insurance-pool-balance (- (var-get insurance-pool-balance) payout-amount))
+    (map-set insurance-claims
+      { claim-id: claim-id }
+      (merge claim { status: "paid" })
+    )
+    (ok claim-id)
+  )
+)
+
+(define-public (validate-and-process-claim (claim-id uint))
+  (let (
+    (claim (unwrap! (map-get? insurance-claims { claim-id: claim-id }) err-claim-not-found))
+    (policy (unwrap! (map-get? insurance-policies { policy-id: (get policy-id claim) }) err-policy-not-found))
+    (animal-id (get animal-id claim))
+    (current-health-score (unwrap! (calculate-health-score animal-id) err-animal-not-found))
+  )
+    (asserts! (is-eq tx-sender contract-owner) err-not-authorized)
+    (asserts! (is-eq (get status claim) "pending") err-claim-already-processed)
+    (asserts! (>= current-health-score (get min-health-score policy)) err-health-score-too-low)
+    (map-set insurance-claims
+      { claim-id: claim-id }
+      (merge claim { status: "approved" })
+    )
+    (process-claim-payout claim-id)
+  )
+)
+
+(define-read-only (get-insurance-policy (policy-id uint))
+  (ok (unwrap! (map-get? insurance-policies { policy-id: policy-id }) err-policy-not-found))
+)
+
+(define-read-only (get-insurance-claim (claim-id uint))
+  (ok (unwrap! (map-get? insurance-claims { claim-id: claim-id }) err-claim-not-found))
+)
+
+(define-read-only (get-insurance-pool-balance)
+  (ok (var-get insurance-pool-balance))
+)
+
+(define-read-only (calculate-premium-discount (animal-id uint))
+  (let (
+    (health-score (unwrap! (calculate-health-score animal-id) err-animal-not-found))
+    (vaccination-count (get vaccination-count (unwrap! (map-get? animal-details { animal-id: animal-id }) err-animal-not-found)))
+  )
+    (ok (+ (/ health-score u10) (if (> (* vaccination-count u5) u20) u20 (* vaccination-count u5))))
+  )
+)
+
