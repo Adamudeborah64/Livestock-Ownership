@@ -798,4 +798,3 @@
   (ok (calculate-nutrition-score-internal animal-id))
 )
 
-

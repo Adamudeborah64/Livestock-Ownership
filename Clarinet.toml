@@ -9,6 +9,11 @@ requirements = []
 path = 'contracts/Livestock-Ownership.clar'
 clarity_version = 3
 epoch = 3.1
+
+[contracts.performance-analytics]
+path = 'contracts/performance-analytics.clar'
+clarity_version = 3
+epoch = 3.1
 [repl.analysis]
 passes = ['check_checker']
 
